@@ -8,7 +8,7 @@ from notion_client import Client as NotionClient
 from src.helpers import get_garmin_client, get_notion_client
 
 # Your local time zone, replace with the appropriate one if needed
-local_tz = pytz.timezone('America/Toronto')
+local_tz = pytz.timezone('Europe/Kyiv')
 
 ACTIVITY_ICONS = {
     "Barre": "https://img.icons8.com/?size=100&id=66924&format=png&color=000000",
@@ -30,6 +30,13 @@ ACTIVITY_ICONS = {
     "Walking": "https://img.icons8.com/?size=100&id=9807&format=png&color=000000",
     "Yoga": "https://img.icons8.com/?size=100&id=9783&format=png&color=000000",
     # Add more mappings as needed
+}
+
+
+# Select options that exist in the Notion "Activity Type" property. Anything else goes to "Other".
+NOTION_ACTIVITY_TYPES = {
+    "Breathwork", "Relaxation", "Cardio", "Cycling", "Hiking", "Rowing", "Running",
+    "Strength", "Stretching", "Swimming", "Walking", "Yoga/Pilates", "Other",
 }
 
 
@@ -72,13 +79,64 @@ def format_activity_type(activity_type: str, activity_name: str = "") -> tuple[s
 
     # Special cases for activity names
     if activity_name and "meditation" in activity_name.lower():
-        return "Meditation", "Meditation"
+        return "Breathwork", "Meditation"
     if activity_name and "barre" in activity_name.lower():
         return "Strength", "Barre"
     if activity_name and "stretch" in activity_name.lower():
         return "Stretching", "Stretching"
 
+    if activity_type not in NOTION_ACTIVITY_TYPES:
+        activity_type = "Other"
+
     return activity_type, activity_subtype
+
+
+def _pretty(name: str) -> str:
+    return (name or "").replace('_', ' ').title()
+
+
+def build_strength_sets_blocks(garmin_client: GarminClient, activity_id) -> list[dict]:
+    # Build a Notion table with every working set: exercise, reps, weight.
+    try:
+        data = garmin_client.get_activity_exercise_sets(activity_id) or {}
+    except Exception as e:  # never break the sync because of sets
+        print(f"Could not fetch exercise sets for {activity_id}: {e}")
+        return []
+
+    rows = []
+    set_numbers: dict[str, int] = {}
+    for s in data.get('exerciseSets') or []:
+        if s.get('setType') != 'ACTIVE':
+            continue
+        exercises = s.get('exercises') or [{}]
+        ex = max(exercises, key=lambda x: x.get('probability') or 0)
+        name = _pretty(ex.get('name') or ex.get('category') or 'Unknown')
+        set_numbers[name] = set_numbers.get(name, 0) + 1
+        reps = s.get('repetitionCount')
+        weight = s.get('weight')
+        if weight:
+            weight = weight / 1000 if weight > 500 else weight  # Garmin stores grams
+            weight_str = f"{round(weight, 1):g}"
+        else:
+            weight_str = "0"
+        duration = s.get('duration')
+        rows.append([name, str(set_numbers[name]), str(reps if reps is not None else ""), weight_str,
+                     str(round(duration)) if duration else ""])
+
+    if not rows:
+        return []
+
+    def cell(text):
+        return [{"type": "text", "text": {"content": text}}]
+
+    header = ["Exercise", "Set", "Reps", "Weight (kg)", "Time (s)"]
+    table_rows = [{"type": "table_row", "table_row": {"cells": [cell(c) for c in r]}}
+                  for r in [header] + rows[:99]]
+    return [
+        {"type": "heading_2", "heading_2": {"rich_text": cell("Sets")}},
+        {"type": "table", "table": {"table_width": 5, "has_column_header": True,
+                                    "has_row_header": False, "children": table_rows}},
+    ]
 
 
 def format_entertainment(activity_name: str) -> str:
@@ -194,7 +252,8 @@ def activity_needs_update(existing_activity: dict, new_activity: dict) -> bool:
     )
 
 
-def create_activity(notion_client: NotionClient, database_id: str, activity: dict) -> None:
+def create_activity(notion_client: NotionClient, database_id: str, activity: dict,
+                    garmin_client: GarminClient | None = None) -> None:
     # Create a new activity in the Notion database
     activity_date = activity.get('startTimeGMT')
     activity_name = format_entertainment(activity.get('activityName', 'Unnamed Activity'))
@@ -237,6 +296,11 @@ def create_activity(notion_client: NotionClient, database_id: str, activity: dic
 
     if icon_url:
         page["icon"] = {"type": "external", "external": {"url": icon_url}}
+
+    if garmin_client is not None and activity_type == "Strength" and activity.get('activityId'):
+        children = build_strength_sets_blocks(garmin_client, activity['activityId'])
+        if children:
+            page["children"] = children
 
     notion_client.pages.create(**page)
 
@@ -322,7 +386,7 @@ def main():
                 update_activity(notion_client, existing_activity, activity)
                 # print(f"Updated: {activity_type} - {activity_name}")
         else:
-            create_activity(notion_client, database_id, activity)
+            create_activity(notion_client, database_id, activity, garmin_client)
             # print(f"Created: {activity_type} - {activity_name}")
 
 
