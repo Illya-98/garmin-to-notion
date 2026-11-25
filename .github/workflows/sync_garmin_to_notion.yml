@@ -2,20 +2,21 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    - cron: '0 1 * * *' # Daily
+    - cron: '0 19 * * *' # Daily, 21:00 Kyiv (winter) / 22:00 (summer)
   workflow_dispatch:
     inputs:
       GARMIN_ACTIVITIES_FETCH_LIMIT:
         type: number
         default: 10
 env:
-  TZ: 'America/Toronto'
+  TZ: 'Europe/Kyiv'
+  UV_SKIP_WHEEL_FILENAME_CHECK: '1'
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -32,7 +33,7 @@ jobs:
           NOTION_STEPS_DB_ID: ${{ secrets.NOTION_STEPS_DB_ID }}
           NOTION_SLEEP_DB_ID: ${{ secrets.NOTION_SLEEP_DB_ID }}
           GARMIN_ACTIVITIES_FETCH_LIMIT: ${{ inputs.GARMIN_ACTIVITIES_FETCH_LIMIT || '10' }}
-          TZ: 'America/Toronto'
+          TZ: 'Europe/Kyiv'
         run: |
           uv run python -m src.workflows.garmin-activities
           uv run python -m src.workflows.personal-records
